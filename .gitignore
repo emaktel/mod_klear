@@ -1,0 +1,16 @@
+build/
+*.o
+*.lo
+*.la
+*.so
+*.a
+*.d
+.deps/
+test/fixtures/
+test/reports/
+test/runner/__pycache__/
+test/runner/.venv/
+*.pyc
+compile_commands.json
+.vscode/
+.idea/
