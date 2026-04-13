@@ -1,0 +1,40 @@
+<!-- Example dialplan snippets for mod_klear. Copy the actions into your
+     own extensions. -->
+<include>
+  <context name="default">
+
+    <!-- Unconditionally clean inbound audio before bridging to an AI agent. -->
+    <extension name="klear_to_agent">
+      <condition field="destination_number" expression="^agent_(.*)$">
+        <action application="answer"/>
+        <action application="klear" data="start"/>
+        <action application="bridge" data="user/$1"/>
+      </condition>
+    </extension>
+
+    <!-- Control both sides of a person-to-person call. klear attaches to
+         the inbound leg, cleaning the audio we receive from the caller; for
+         the callee, chain the app into the bridge target as well. -->
+    <extension name="klear_human">
+      <condition field="destination_number" expression="^clean$">
+        <action application="answer"/>
+        <action application="set" data="klear_ns_atten=30"/>
+        <action application="klear" data="start"/>
+        <action application="bridge" data="sofia/gateway/pstn/1234567890"/>
+      </condition>
+    </extension>
+
+    <!-- A/B tuning: attach klear with NS disabled, then flip it on mid-call
+         from ESL via `klear <uuid> set ns=on`. -->
+    <extension name="klear_ab">
+      <condition field="destination_number" expression="^klear_ab$">
+        <action application="answer"/>
+        <action application="set" data="klear_aec=true"/>
+        <action application="set" data="klear_ns=false"/>
+        <action application="klear" data="start"/>
+        <action application="park"/>
+      </condition>
+    </extension>
+
+  </context>
+</include>
