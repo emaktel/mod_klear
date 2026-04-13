@@ -49,11 +49,28 @@ namespace {
 
 // ---- Globals ------------------------------------------------------------
 
+// Canonical configuration presets. Each preset is a named bundle of
+// backend settings tuned against the offline benchmark in test/reports/.
+// Pick one via the klear_preset channel variable or global default; the
+// individual klear_aec / klear_ns / klear_hpf / klear_ns_atten variables
+// override any preset on the same channel.
+enum class Preset {
+    Agent,      // DF-only. Best near-end preservation on doubletalk
+                // (AECMOS deg 3.26) while DF's neural discrimination
+                // still removes ~17 dB of echo energy. Target: AI agents,
+                // ASR feeds, anything where caller speech must survive.
+    Telephony,  // AEC3 + DF aggressive. Maximum echo cancellation
+                // (>38 dB far-end ERLE) at the cost of near-end
+                // damage during doubletalk. Target: classic human-to-
+                // human calls where echo is unforgivable.
+    AecOnly,    // Raw WebRTC AEC3, no DF. Cheapest path; ~17 dB ERLE
+                // with near-zero near-end damage in single-talk.
+};
+
 struct Globals {
-    bool default_aec = true;
-    bool default_ns = true;
-    bool default_hpf = true;
+    Preset default_preset = Preset::Agent;
     float default_ns_atten_db = 30.0f;
+    bool default_hpf = true;
 };
 
 Globals g_globals{};
@@ -201,8 +218,30 @@ switch_status_t klear_start(switch_core_session_t* session) {
     const int rate =
         read_codec->implementation->actual_samples_per_second;
 
-    const bool want_aec = var_bool(channel, "klear_aec", g_globals.default_aec);
-    const bool want_ns  = var_bool(channel, "klear_ns",  g_globals.default_ns);
+    // Resolve the effective preset: channel variable wins over global default.
+    Preset effective_preset = g_globals.default_preset;
+    const char* preset_var = switch_channel_get_variable(channel, "klear_preset");
+    if (preset_var && *preset_var) {
+        if (!strcasecmp(preset_var, "agent"))          effective_preset = Preset::Agent;
+        else if (!strcasecmp(preset_var, "telephony")) effective_preset = Preset::Telephony;
+        else if (!strcasecmp(preset_var, "aec_only") ||
+                 !strcasecmp(preset_var, "aec-only"))  effective_preset = Preset::AecOnly;
+        else switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+            SWITCH_LOG_WARNING, "klear: unknown preset '%s', using default\n",
+            preset_var);
+    }
+
+    bool preset_aec = false, preset_ns = false;
+    switch (effective_preset) {
+        case Preset::Agent:     preset_aec = false; preset_ns = true;  break;
+        case Preset::Telephony: preset_aec = true;  preset_ns = true;  break;
+        case Preset::AecOnly:   preset_aec = true;  preset_ns = false; break;
+    }
+
+    // Fine-grained overrides: any explicit klear_aec / klear_ns / klear_hpf /
+    // klear_ns_atten wins over the preset default.
+    const bool want_aec = var_bool(channel, "klear_aec", preset_aec);
+    const bool want_ns  = var_bool(channel, "klear_ns",  preset_ns);
     const bool want_hpf = var_bool(channel, "klear_hpf", g_globals.default_hpf);
     const float atten_db = var_float(channel, "klear_ns_atten",
                                      g_globals.default_ns_atten_db);
@@ -410,9 +449,14 @@ void load_config() {
              param = param->next) {
             const char* name = switch_xml_attr_soft(param, "name");
             const char* val = switch_xml_attr_soft(param, "value");
-            if (!strcasecmp(name, "default-aec")) g_globals.default_aec = switch_true(val);
-            else if (!strcasecmp(name, "default-ns")) g_globals.default_ns = switch_true(val);
-            else if (!strcasecmp(name, "default-hpf")) g_globals.default_hpf = switch_true(val);
+            if (!strcasecmp(name, "default-preset")) {
+                if (!strcasecmp(val, "agent"))          g_globals.default_preset = Preset::Agent;
+                else if (!strcasecmp(val, "telephony")) g_globals.default_preset = Preset::Telephony;
+                else if (!strcasecmp(val, "aec_only") ||
+                         !strcasecmp(val, "aec-only"))  g_globals.default_preset = Preset::AecOnly;
+            }
+            else if (!strcasecmp(name, "default-hpf"))
+                g_globals.default_hpf = switch_true(val);
             else if (!strcasecmp(name, "default-ns-atten-db"))
                 g_globals.default_ns_atten_db = static_cast<float>(atof(val));
         }
@@ -442,10 +486,16 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_klear_load) {
         klear_api_function,
         "klear <uuid> start|stop|set key=value ...");
 
+    const char* preset_name = "agent";
+    switch (g_globals.default_preset) {
+        case Preset::Agent:     preset_name = "agent"; break;
+        case Preset::Telephony: preset_name = "telephony"; break;
+        case Preset::AecOnly:   preset_name = "aec_only"; break;
+    }
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-        "mod_klear loaded (default aec=%d ns=%d hpf=%d atten=%.1fdB)\n",
-        (int)g_globals.default_aec, (int)g_globals.default_ns,
-        (int)g_globals.default_hpf, g_globals.default_ns_atten_db);
+        "mod_klear loaded (default preset=%s hpf=%d atten=%.1fdB)\n",
+        preset_name, (int)g_globals.default_hpf,
+        g_globals.default_ns_atten_db);
     return SWITCH_STATUS_SUCCESS;
 }
 

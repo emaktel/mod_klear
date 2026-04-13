@@ -16,38 +16,40 @@ classic (pre-neural) RNNoise, and there is no glue for AEC3. mod_klear
 fills that gap with measurable, tunable, and hot-toggleable cleanup on
 real phone audio.
 
-## Results
+## Results and presets
 
-Measured on the Microsoft AEC Challenge ICASSP 2022 test set using the
-offline harness that shares its pipeline with the live module
-(`test/runner/bench.py`, default config: DeepFilterNet3 atten_lim 30 dB,
-post-filter off, AEC3 + high-pass on). The module works at every common
-phone rate — narrowband (8 k), wideband (16 k), super-wideband (32 k), and
-full-band (48 k) — via a transparent libsoxr resampling stage inside the
-DF backend.
+mod_klear ships three measurement-tuned presets. The right one depends on
+whether you care more about raw echo removal or near-end speech
+preservation during double-talk. All numbers below are averages on the
+Microsoft AEC Challenge ICASSP 2022 test set, scored by the offline
+harness (`test/runner/bench.py`, report `test/reports/presets.md`).
+AECMOS is Microsoft's reference doubletalk MOS model, 1-5 higher-is-
+better.
 
-| rate   | ERLE dB  | PESQ       | STOI  | RTF   | delay |
-|--------|---------:|-----------:|------:|------:|------:|
-|  8 kHz | **38.0** | **4.28** nb | 0.977 | 0.245 | 40 ms |
-| 16 kHz | 36.5     | 4.07 wb    | 0.984 | 0.281 | 40 ms |
-| 32 kHz | 39.2     | 4.05 wb    | 0.983 | 0.267 | 40 ms |
-| 48 kHz | 38.8     | 4.18 wb    | 0.986 | 0.239 | 30 ms |
+| preset        | use case | far ERLE | near PESQ | DT echo MOS | DT deg MOS | RTF  | delay |
+|---------------|---|--:|--:|--:|--:|--:|--:|
+| `agent` *(default)* | AI agents, ASR, speech preservation | **17.4 dB** | **4.13** | **3.47** | **3.26** | 0.31 | 30 ms |
+| `telephony`   | Classic human-human, echo must die | **38.8 dB** | 4.14 | 4.34 | 2.01 | 0.33 | 30 ms |
+| `aec_only`    | Minimum CPU, single-talk dominant | 16.8 dB | 4.55 | 4.14 | 1.87 | 0.02 | 10 ms |
+| pass-through (baseline) | — | 0 dB | 4.64 | 2.81 | 3.96 | 0 | 0 ms |
 
-ERLE is the whole-file power ratio on far-end single-talk clips (higher
-is more echo removed). PESQ / STOI are computed against a silent-
-reference near-end single-talk variant so they measure whether the
-pipeline leaves clean speech alone when there is no echo or noise to
-cancel. Per-channel wall-clock RTF is the fraction of real time spent in
-the pipeline on a single CPU core.
+Reading the table: the `agent` preset uses DeepFilterNet as a neural
+echo+noise suppressor (no AEC3). It gives up some peak echo cancellation
+(17 dB vs 39 dB) but during doubletalk it preserves near-end speech at
+**3.26 deg MOS versus 2.01** for the classic AEC3-aggressive path, a full
+1.25 MOS improvement. For an LLM or ASR listening on the other side of
+the call, that preservation is the difference between a reliable
+transcript and a degraded one.
 
-For context: pass-through PESQ is 4.64, AEC-only (no NS) delivers 16.8 dB
-ERLE. The full benchmark sweep is reproducible with `make test && cd
-test/runner && python3 bench.py --rates 8000,16000,32000,48000`.
+All three presets run at every common phone rate — 8 k, 16 k, 32 k, and
+48 k — via a transparent libsoxr (SOXR_QQ cubic) resampling stage inside
+the DF backend. Delay is 30 ms at 48 kHz native (AEC3 10 ms + DFN3 20 ms);
+~40 ms at other rates (+ 10 ms for the resampler), still well inside the
+50 ms conversational comfort budget. ITU G.114 flags > 150 ms one-way as
+the start of perceptible latency.
 
-The pipeline delay is 30 ms at 48 kHz native (AEC3 10 ms + DFN3 20 ms) and
-~40 ms at any other rate (+ SOXR_QQ 10 ms). Both fit inside the 50 ms
-conversational-voice comfort budget, and ITU G.114 flags > 150 ms one-way
-as the start of perceptible latency.
+Full rate-sweep: `cat test/reports/rate_sweep_qq.md` after running
+`python3 test/runner/bench.py --rates 8000,16000,32000,48000`.
 
 ## Pipeline
 
@@ -121,12 +123,13 @@ fs_cli -x "load mod_klear"
 Read at `klear start`; the boolean toggles are also re-read per frame after
 being updated by the runtime `set` verb.
 
-| variable          | type     | default       | effect                              |
-|-------------------|----------|---------------|-------------------------------------|
-| `klear_aec`       | bool     | `true`        | enable AEC3 echo cancellation       |
-| `klear_ns`        | bool     | `true`        | enable DF3 noise suppression        |
-| `klear_hpf`       | bool     | `true`        | enable AEC3 high-pass filter        |
-| `klear_ns_atten`  | float dB | `30.0`        | DF attenuation limit                |
+| variable          | type   | default          | effect                                                     |
+|-------------------|--------|------------------|------------------------------------------------------------|
+| `klear_preset`    | enum   | `agent` (global) | `agent` / `telephony` / `aec_only` — see presets table     |
+| `klear_aec`       | bool   | preset-driven    | force AEC3 on/off (overrides preset)                       |
+| `klear_ns`        | bool   | preset-driven    | force DF3 NS on/off (overrides preset)                     |
+| `klear_hpf`       | bool   | `true`           | enable AEC3 high-pass filter (only when AEC is on)         |
+| `klear_ns_atten`  | float  | `30.0` dB        | DF attenuation limit; higher = more aggressive             |
 
 ### Dialplan
 

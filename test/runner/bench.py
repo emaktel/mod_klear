@@ -163,6 +163,11 @@ def nearend_singletalk_pairs() -> list[tuple[str, Path, Path]]:
            discover_pairs("nearend-singletalk", "nearend-singletalk-with-movement")
 
 
+def doubletalk_pairs() -> list[tuple[str, Path, Path]]:
+    return discover_pairs("doubletalk", "doubletalk") + \
+           discover_pairs("doubletalk", "doubletalk-with-movement")
+
+
 # ---------- running klear_test --------------------------------------------
 
 @dataclass
@@ -198,14 +203,25 @@ class NearendResult:
 
 
 @dataclass
+class DoubletalkResult:
+    file_id: str
+    echo_mos: float      # AECMOS echo suppression score, 1-5 higher better
+    deg_mos: float       # AECMOS degradation score,     1-5 higher better
+    rtf: float
+    algo_delay_ms: int
+
+
+@dataclass
 class ConfigReport:
     config: RunConfig
     farend: list[FarendResult] = field(default_factory=list)
     nearend: list[NearendResult] = field(default_factory=list)
+    doubletalk: list[DoubletalkResult] = field(default_factory=list)
 
     def summary(self) -> dict:
         fe = self.farend
         ne = self.nearend
+        dt = self.doubletalk
         def mean(key, lst):
             vs = [getattr(r, key) for r in lst]
             return float(np.mean(vs)) if vs else math.nan
@@ -225,8 +241,15 @@ class ConfigReport:
                 "si_sdr_db_mean": mean("si_sdr_db", ne),
                 "rtf_mean": mean("rtf", ne),
             },
+            "doubletalk_aecmos": {
+                "n": len(dt),
+                "echo_mos_mean": mean("echo_mos", dt),
+                "deg_mos_mean":  mean("deg_mos",  dt),
+                "rtf_mean":      mean("rtf", dt),
+            },
             "algo_delay_ms": (fe[0].algo_delay_ms if fe else
-                              (ne[0].algo_delay_ms if ne else -1)),
+                              (ne[0].algo_delay_ms if ne else
+                               (dt[0].algo_delay_ms if dt else -1))),
         }
 
 
@@ -307,6 +330,48 @@ def _silent_lpb_for(mic: Path, tmpdir: Path) -> Path:
     return path
 
 
+# AECMOS doubletalk scorer (Microsoft's ICASSP 2022 reference model).
+_aecmos_singleton = None
+def _aecmos():
+    global _aecmos_singleton
+    if _aecmos_singleton is None:
+        sys.path.insert(0, "/root/build/AEC-Challenge/AECMOS/AECMOS_local")
+        from aecmos import AECMOSEstimator
+        model = "/root/build/AEC-Challenge/AECMOS/AECMOS_local/Run_1663915512_Stage_0.onnx"
+        _aecmos_singleton = AECMOSEstimator(model)
+    return _aecmos_singleton
+
+
+def score_doubletalk(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
+                     tmpdir: Path) -> list[DoubletalkResult]:
+    import librosa
+    out: list[DoubletalkResult] = []
+    est = _aecmos()
+    for i, (fid, mic0, lpb0) in enumerate(pairs):
+        mic = resampled_path(mic0, cfg.rate) if cfg.rate != 48000 else mic0
+        lpb = resampled_path(lpb0, cfg.rate) if cfg.rate != 48000 else lpb0
+        out_wav = tmpdir / f"{cfg.name}_dt_{i}.wav"
+        stats_json = tmpdir / f"{cfg.name}_dt_{i}.json"
+        stats = run_klear_test(cfg, mic, lpb, out_wav, stats_json)
+        if not stats:
+            continue
+        m, _ = librosa.load(str(mic),     sr=16000)
+        l, _ = librosa.load(str(lpb),     sr=16000)
+        e, _ = librosa.load(str(out_wav), sr=16000)
+        n = min(len(m), len(l), len(e))
+        try:
+            echo_mos, deg_mos = est.run("dt", l[:n], m[:n], e[:n])
+        except Exception as ex:
+            print(f"aecmos fail {fid}: {ex}", file=sys.stderr)
+            continue
+        out.append(DoubletalkResult(
+            file_id=fid, echo_mos=float(echo_mos), deg_mos=float(deg_mos),
+            rtf=float(stats.get("rtf", 0.0)),
+            algo_delay_ms=int(stats.get("algorithmic_delay_ms", -1)),
+        ))
+    return out
+
+
 def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
                   tmpdir: Path) -> list[NearendResult]:
     out: list[NearendResult] = []
@@ -360,6 +425,8 @@ def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
 DEFAULT_CONFIGS = [
     RunConfig("passthrough", aec=False, ns=False, hpf=False),
     RunConfig("aec_only",    aec=True,  ns=False, hpf=True),
+    RunConfig("df_only",     aec=False, ns=True,  hpf=False,
+              backend_ns="deepfilter", df_atten_db=30,  df_post_filter_beta=0.0),
     RunConfig("aec_plus_df", aec=True,  ns=True,  hpf=True,
               backend_ns="deepfilter", df_atten_db=30,  df_post_filter_beta=0.0),
 ]
@@ -382,17 +449,20 @@ def run(name: str, configs: list[RunConfig], max_per_scenario: int) -> Path:
 
     fe_pairs = farend_singletalk_pairs()[:max_per_scenario]
     ne_pairs = nearend_singletalk_pairs()[:max_per_scenario]
+    dt_pairs = doubletalk_pairs()[:max_per_scenario]
     print(f"farend-singletalk pairs : {len(fe_pairs)}")
     print(f"nearend-singletalk pairs: {len(ne_pairs)}")
-    if not fe_pairs and not ne_pairs:
+    print(f"doubletalk pairs        : {len(dt_pairs)}")
+    if not (fe_pairs or ne_pairs or dt_pairs):
         sys.exit("no fixture wavs available — run git lfs pull first")
 
     reports: list[ConfigReport] = []
     for cfg in configs:
         print(f"\n== {cfg.name} ==")
         rep = ConfigReport(config=cfg)
-        rep.farend  = score_farend(cfg, fe_pairs, tmp)
-        rep.nearend = score_nearend(cfg, ne_pairs, tmp)
+        rep.farend     = score_farend(cfg, fe_pairs, tmp)
+        rep.nearend    = score_nearend(cfg, ne_pairs, tmp)
+        rep.doubletalk = score_doubletalk(cfg, dt_pairs, tmp)
         s = rep.summary()
         print(json.dumps(s, indent=2))
         reports.append(rep)
@@ -426,6 +496,16 @@ def render_markdown(name: str, reports: list[ConfigReport]) -> str:
             f"| {r.config.name} | {s['n']} | "
             f"{s['pesq_wb_mean']:.3f} | {s['stoi_mean']:.3f} | "
             f"{s['si_sdr_db_mean']:.2f} | {s['rtf_mean']:.4f} |")
+    lines += ["", "## Doubletalk (AECMOS — higher is better, 1-5 MOS)", ""]
+    lines += ["| config | n | echo MOS | deg MOS | sum |",
+              "|---|---:|---:|---:|---:|"]
+    for r in reports:
+        s = r.summary()["doubletalk_aecmos"]
+        tot = s["echo_mos_mean"] + s["deg_mos_mean"]
+        lines.append(
+            f"| {r.config.name} | {s['n']} | "
+            f"{s['echo_mos_mean']:.2f} | {s['deg_mos_mean']:.2f} | "
+            f"{tot:.2f} |")
     lines += ["", "## Pipeline latency", ""]
     lines += ["| config | algo delay ms |", "|---|---:|"]
     for r in reports:
