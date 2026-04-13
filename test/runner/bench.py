@@ -60,7 +60,8 @@ def rms_db(x: np.ndarray) -> float:
 
 
 def si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
-    # Scale-invariant SDR (Le Roux et al. 2019).
+    # Scale-invariant SDR (Le Roux et al. 2019). Assumes inputs are already
+    # time-aligned — callers must compensate for any algorithmic delay first.
     reference = reference.astype(np.float64)
     estimate = estimate.astype(np.float64)
     ref_energy = np.dot(reference, reference) + 1e-20
@@ -68,6 +69,44 @@ def si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
     proj = scale * reference
     noise = estimate - proj
     return 10.0 * math.log10(np.dot(proj, proj) / (np.dot(noise, noise) + 1e-20) + 1e-20)
+
+
+def align_by_xcorr(reference: np.ndarray, estimate: np.ndarray,
+                   max_shift: int) -> tuple[np.ndarray, np.ndarray, int]:
+    """Find the integer sample shift in [-max_shift, +max_shift] that
+    maximises the cross-correlation of reference and estimate, then return
+    the trimmed pair. Positive shift means the estimate lags the reference
+    (as happens with a causal AEC/NS: the estimate is the reference shifted
+    forward in time by the algorithmic delay)."""
+    if max_shift <= 0:
+        n = min(len(reference), len(estimate))
+        return reference[:n], estimate[:n], 0
+    # Use a middle slice for the search to avoid fade-ins and to keep
+    # xcorr cheap.
+    n = min(len(reference), len(estimate))
+    slice_len = min(n, 48000 * 3)   # 3 s at 48 k
+    a0 = (n - slice_len) // 2
+    a = reference[a0:a0 + slice_len].astype(np.float64)
+    b = estimate [a0:a0 + slice_len].astype(np.float64)
+    # np.correlate is O(n*max_shift); bound the shift to keep it cheap.
+    best_shift, best_score = 0, -np.inf
+    for s in range(-max_shift, max_shift + 1):
+        if s >= 0:
+            score = np.dot(a[:slice_len - s], b[s:slice_len])
+        else:
+            score = np.dot(a[-s:slice_len], b[:slice_len + s])
+        if score > best_score:
+            best_score = score
+            best_shift = s
+    # Apply the shift so est[shift:] lines up with ref[:-shift].
+    if best_shift > 0:
+        reference = reference[:-best_shift]
+        estimate  = estimate[best_shift:]
+    elif best_shift < 0:
+        reference = reference[-best_shift:]
+        estimate  = estimate[:best_shift]
+    m = min(len(reference), len(estimate))
+    return reference[:m], estimate[:m], best_shift
 
 
 def load_pcm(path: Path) -> tuple[np.ndarray, int]:
@@ -120,6 +159,8 @@ class RunConfig:
     hpf: bool = True
     backend_ns: str = "null"
     rate: int = 48000
+    df_atten_db: float = 100.0
+    df_post_filter_beta: float = 0.02
 
 
 @dataclass
@@ -186,6 +227,8 @@ def run_klear_test(cfg: RunConfig, near: Path, far: Path,
         "--ns",  "on" if cfg.ns  else "off",
         "--hpf", "on" if cfg.hpf else "off",
         "--backend-ns", cfg.backend_ns,
+        "--df-atten", str(cfg.df_atten_db),
+        "--df-postfilter", str(cfg.df_post_filter_beta),
     ]
     t0 = time.time()
     res = subprocess.run(cmd, capture_output=True, text=True)
@@ -226,10 +269,33 @@ def score_farend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
     return out
 
 
+def _silent_lpb_for(mic: Path, tmpdir: Path) -> Path:
+    """Create a digitally-silent reference that matches the mic length / SR.
+    Preservation tests need this because the real AEC-Challenge lpb files in
+    the nearend-singletalk scenario are not silent — they contain prompt
+    audio and ambient noise that legitimately reflects into the mic as echo.
+    Using those as the `far` input means AEC correctly suppresses the
+    echoey parts of the mic, and PESQ then scores the cleaner output as
+    "degraded" against the echoey reference. That is a methodology bug, not
+    an AEC bug. Feeding silence isolates the case we actually care about:
+    `when there is no echo to cancel, does the pipeline leave the signal
+    alone?`"""
+    import soundfile as sf
+    import numpy as np
+    data, sr = sf.read(str(mic), dtype="int16")
+    if data.ndim > 1:
+        data = data[:, 0]
+    silent = np.zeros_like(data)
+    path = tmpdir / f"silent_{mic.stem}.wav"
+    sf.write(str(path), silent, sr, subtype="PCM_16")
+    return path
+
+
 def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
                   tmpdir: Path) -> list[NearendResult]:
     out: list[NearendResult] = []
-    for i, (fid, mic, lpb) in enumerate(pairs):
+    for i, (fid, mic, _unused_lpb) in enumerate(pairs):
+        lpb = _silent_lpb_for(mic, tmpdir)
         out_wav = tmpdir / f"{cfg.name}_ne_{i}.wav"
         stats_json = tmpdir / f"{cfg.name}_ne_{i}.json"
         stats = run_klear_test(cfg, mic, lpb, out_wav, stats_json)
@@ -237,9 +303,15 @@ def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
             continue
         mic_data, sr = load_pcm(mic)
         out_data, _  = load_pcm(out_wav)
-        n = min(len(mic_data), len(out_data))
-        mic_f = mic_data[:n].astype(np.float64) / 32768.0
-        out_f = out_data[:n].astype(np.float64) / 32768.0
+        # Shift estimate forward by the pipeline's algorithmic delay so the
+        # sample-aligned metrics (STOI, SI-SDR) measure quality rather than
+        # alignment error. PESQ realigns internally so the shift is a no-op
+        # for it.
+        algo_ms = int(stats.get("algorithmic_delay_ms", 0))
+        max_shift_samples = max(1, int((algo_ms + 10) * sr / 1000))
+        mic_a, out_a, _ = align_by_xcorr(mic_data, out_data, max_shift_samples)
+        mic_f = mic_a.astype(np.float64) / 32768.0
+        out_f = out_a.astype(np.float64) / 32768.0
         # PESQ requires 8k or 16k; resample if needed.
         try:
             if sr in (8000, 16000):
@@ -272,8 +344,14 @@ def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
 DEFAULT_CONFIGS = [
     RunConfig("passthrough", aec=False, ns=False, hpf=False),
     RunConfig("aec_only",    aec=True,  ns=False, hpf=True),
-    RunConfig("aec_plus_df", aec=True,  ns=True,  hpf=True, backend_ns="deepfilter"),
-    RunConfig("df_only",     aec=False, ns=True,  hpf=False, backend_ns="deepfilter"),
+    RunConfig("aec_df_a100", aec=True,  ns=True,  hpf=True,
+              backend_ns="deepfilter", df_atten_db=100, df_post_filter_beta=0.02),
+    RunConfig("aec_df_a50",  aec=True,  ns=True,  hpf=True,
+              backend_ns="deepfilter", df_atten_db=50,  df_post_filter_beta=0.02),
+    RunConfig("aec_df_a30",  aec=True,  ns=True,  hpf=True,
+              backend_ns="deepfilter", df_atten_db=30,  df_post_filter_beta=0.02),
+    RunConfig("aec_df_a30_nopf", aec=True, ns=True, hpf=True,
+              backend_ns="deepfilter", df_atten_db=30,  df_post_filter_beta=0.0),
 ]
 
 

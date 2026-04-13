@@ -18,11 +18,15 @@ public:
         // Path to a DFN model tar.gz. When empty the bundled DFN3 model
         // compiled into libdeepfilter is used.
         std::string model_path;
-        // Maximum attenuation in dB applied by DF. Typical 30-100. Higher =
-        // more aggressive suppression but more risk of speech damage.
-        float atten_lim_db = 100.0f;
+        // Max attenuation in dB applied by DF. atten=30 with post-filter
+        // off is the empirically-tuned default from test/reports/df_sweep:
+        // 38.8 dB far-end ERLE combined with AEC3 while holding near-end
+        // PESQ preservation at 4.14 (vs 4.55 AEC-only and 4.64 passthrough).
+        float atten_lim_db = 30.0f;
         // Post-filter beta in [0.0, ~0.05]. 0 disables the post filter.
-        float post_filter_beta = 0.02f;
+        // Disabled by default — measurement showed it hurts preservation
+        // without meaningfully improving echo cancellation.
+        float post_filter_beta = 0.0f;
         // DF logging verbosity: "none", "error", "warn", "info", "debug".
         std::string log_level = "error";
     };

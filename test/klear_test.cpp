@@ -43,6 +43,8 @@ struct Args {
     bool ns = false;
     bool hpf = true;
     std::string backend_ns = "null";
+    float df_atten_lim_db = 100.0f;
+    float df_post_filter_beta = 0.02f;
 };
 
 [[noreturn]] void die(const char* msg) {
@@ -72,6 +74,8 @@ Args parse_args(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--ns")) a.ns = parse_bool(next("ns"));
         else if (!std::strcmp(argv[i], "--hpf")) a.hpf = parse_bool(next("hpf"));
         else if (!std::strcmp(argv[i], "--backend-ns")) a.backend_ns = next("backend-ns");
+        else if (!std::strcmp(argv[i], "--df-atten")) a.df_atten_lim_db = std::atof(next("df-atten"));
+        else if (!std::strcmp(argv[i], "--df-postfilter")) a.df_post_filter_beta = std::atof(next("df-postfilter"));
         else {
             std::fprintf(stderr, "klear_test: unknown arg %s\n", argv[i]);
             die("bad args");
@@ -127,9 +131,15 @@ void save_mono_wav(const std::string& path, const std::vector<int16_t>& data,
     sf_close(sf);
 }
 
-std::unique_ptr<klear::INsBackend> make_ns(const std::string& which) {
+std::unique_ptr<klear::INsBackend> make_ns(const std::string& which,
+                                           const Args& a) {
     if (which == "null") return std::make_unique<klear::NullNs>();
-    if (which == "deepfilter") return std::make_unique<klear::DeepFilterNs>();
+    if (which == "deepfilter") {
+        klear::DeepFilterNs::Options o;
+        o.atten_lim_db = a.df_atten_lim_db;
+        o.post_filter_beta = a.df_post_filter_beta;
+        return std::make_unique<klear::DeepFilterNs>(o);
+    }
     std::fprintf(stderr, "klear_test: unsupported --backend-ns=%s\n", which.c_str());
     std::exit(2);
 }
@@ -157,7 +167,7 @@ int main(int argc, char** argv) {
     klear::Processor proc;
     std::string err;
     if (!proc.init(cfg, std::make_unique<klear::WebrtcAec>(aec_opts),
-                   make_ns(a.backend_ns), &err)) {
+                   make_ns(a.backend_ns, a), &err)) {
         std::fprintf(stderr, "init: %s\n", err.c_str());
         return 2;
     }
