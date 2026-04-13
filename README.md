@@ -181,6 +181,46 @@ holding near-end PESQ at 4.14. Raise for more aggressive suppression at
 the cost of speech quality, lower for maximum near-end preservation. See
 the sweep report for all four data points.
 
+## FusionPBX demo dialplans
+
+If you run FusionPBX the repo ships with a ready-to-install dialplan bundle
+in `examples/fusionpbx_dialplans.sql` that exposes the module as five star
+codes in the `global` context (so every domain inherits them):
+
+| code   | name              | what it does |
+|--------|-------------------|---|
+| `*9200` | klear-control     | baseline — plain `echo`, no klear, so you can hear the raw input |
+| `*9201` | klear-agent       | `klear_preset=agent` (DF-only) + echo |
+| `*9202` | klear-telephony   | `klear_preset=telephony` (AEC3 + DF aggressive) + echo |
+| `*9203` | klear-aec-only    | `klear_preset=aec_only` + echo |
+| `*9204` | klear-hot-toggle  | runs `examples/klear_hot_toggle.lua`, which flips `ns`/`aec` every 5 s so you can hear the pipeline change mid-call |
+
+Install:
+
+```sh
+# (1) copy the Lua helper somewhere FreeSWITCH can find it
+sudo cp examples/klear_hot_toggle.lua /usr/share/freeswitch/scripts/
+
+# (2) load the dialplan rows (global context, idempotent)
+PGPASSWORD=... psql -h DB_HOST -U fusionpbx -d fusionpbx \
+    -f examples/fusionpbx_dialplans.sql
+
+# (3) flush FusionPBX's dialplan cache and reload FS XML
+sudo rm -f /var/cache/fusionpbx/dialplan*
+sudo fs_cli -x "reloadxml"
+```
+
+Then dial `*9200`..`*9204` from any domain extension. Watch the live log
+for `klear: attached` / `klear: ns=...` / `klear: aec=...` lines:
+
+```sh
+fs_cli -x "console loglevel info"
+tail -f /var/log/freeswitch/freeswitch.log | grep klear
+```
+
+To auto-load the module on every FS restart, add `<load module="mod_klear"/>`
+somewhere inside the `<modules>` block of `modules.conf.xml`.
+
 ## Live channel smoke test
 
 After building and loading the module you can exercise the full live path
