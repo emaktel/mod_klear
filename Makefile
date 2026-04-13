@@ -55,8 +55,14 @@ MOD_SRC := src/mod_klear.cpp $(CORE_SRC)
 TEST_SRC := test/klear_test.cpp $(CORE_SRC)
 
 # ---- targets ------------------------------------------------------------
-.PHONY: all module test clean install install-module install-config install-models
+.PHONY: all module test live-test clean install install-module install-config install-models
 all: module test
+
+# Run the live end-to-end smoke test: originates a null/nothing channel,
+# attaches mod_klear to it, verifies frames flow through the callback.
+# Requires mod_klear to already be loaded in a running FreeSWITCH.
+live-test:
+	@./test/live_smoke.sh
 
 build:
 	mkdir -p build

@@ -181,6 +181,25 @@ holding near-end PESQ at 4.14. Raise for more aggressive suppression at
 the cost of speech quality, lower for maximum near-end preservation. See
 the sweep report for all four data points.
 
+## Live channel smoke test
+
+After building and loading the module you can exercise the full live path
+— origination, media bug attach, frame processing, detach, stats event —
+with one command:
+
+```sh
+make live-test
+```
+
+This runs `test/live_smoke.sh`, which originates a `null/nothing &echo`
+channel via `fs_cli`, attaches mod_klear, lets a couple of seconds of
+audio flow through, and verifies from the FS log that the callback
+processed at least 10 capture frames. Expected output:
+
+```
+[live_smoke] PASS: 101 capture frames processed through mod_klear on live FS channel
+```
+
 ## Measurement / development workflow
 
 ```sh
