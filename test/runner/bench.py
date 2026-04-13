@@ -45,6 +45,7 @@ KLEAR_TEST = REPO_ROOT / "build" / "klear_test"
 FIXTURES = REPO_ROOT / "test" / "fixtures" / "aec_challenge" / "test_set_icassp2022"
 REPORTS_DIR = REPO_ROOT / "test" / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+RESAMPLE_CACHE = REPO_ROOT / "test" / "reports" / "_resampled"
 
 
 # ---------- helpers --------------------------------------------------------
@@ -72,39 +73,33 @@ def si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
 
 
 def align_by_xcorr(reference: np.ndarray, estimate: np.ndarray,
-                   max_shift: int) -> tuple[np.ndarray, np.ndarray, int]:
-    """Find the integer sample shift in [-max_shift, +max_shift] that
-    maximises the cross-correlation of reference and estimate, then return
+                   sr: int,
+                   max_shift_ms: int = 200) -> tuple[np.ndarray, np.ndarray, int]:
+    """Find the positive integer sample shift in [0, max_shift_ms·sr/1000]
+    that maximises cross-correlation of reference and estimate, then return
     the trimmed pair. Positive shift means the estimate lags the reference
-    (as happens with a causal AEC/NS: the estimate is the reference shifted
-    forward in time by the algorithmic delay)."""
-    if max_shift <= 0:
-        n = min(len(reference), len(estimate))
-        return reference[:n], estimate[:n], 0
-    # Use a middle slice for the search to avoid fade-ins and to keep
-    # xcorr cheap.
+    (the causal-pipeline case). Returns (ref_aligned, est_aligned, shift)."""
     n = min(len(reference), len(estimate))
-    slice_len = min(n, 48000 * 3)   # 3 s at 48 k
+    if n == 0:
+        return reference, estimate, 0
+    max_shift = int(max_shift_ms * sr / 1000)
+    max_shift = min(max_shift, n // 4)
+    # Use an 8-second middle slice (or the whole clip if shorter).
+    slice_len = min(n, sr * 8)
     a0 = (n - slice_len) // 2
     a = reference[a0:a0 + slice_len].astype(np.float64)
     b = estimate [a0:a0 + slice_len].astype(np.float64)
-    # np.correlate is O(n*max_shift); bound the shift to keep it cheap.
     best_shift, best_score = 0, -np.inf
-    for s in range(-max_shift, max_shift + 1):
-        if s >= 0:
-            score = np.dot(a[:slice_len - s], b[s:slice_len])
-        else:
-            score = np.dot(a[-s:slice_len], b[:slice_len + s])
+    # Only search positive shifts (physical pipeline delay).
+    step = max(1, max_shift // 2000)  # cap brute-force cost
+    for s in range(0, max_shift + 1, step):
+        score = float(np.dot(a[: slice_len - s], b[s : slice_len]))
         if score > best_score:
             best_score = score
             best_shift = s
-    # Apply the shift so est[shift:] lines up with ref[:-shift].
     if best_shift > 0:
-        reference = reference[:-best_shift]
+        reference = reference[: -best_shift]
         estimate  = estimate[best_shift:]
-    elif best_shift < 0:
-        reference = reference[-best_shift:]
-        estimate  = estimate[:best_shift]
     m = min(len(reference), len(estimate))
     return reference[:m], estimate[:m], best_shift
 
@@ -114,6 +109,25 @@ def load_pcm(path: Path) -> tuple[np.ndarray, int]:
     if data.ndim > 1:
         data = data.mean(axis=1).astype(np.int16)
     return data, sr
+
+
+def resampled_path(src: Path, target_rate: int) -> Path:
+    """Return a cached PCM16 mono wav file at target_rate for src. Used to
+    feed narrow / wide-band configs through klear_test so we can benchmark
+    DeepFilterNet's built-in libsoxr resampling at 8 k / 16 k / 32 k."""
+    from scipy.signal import resample_poly
+    RESAMPLE_CACHE.mkdir(parents=True, exist_ok=True)
+    cache = RESAMPLE_CACHE / f"{target_rate}_{src.stem}.wav"
+    if cache.is_file():
+        return cache
+    data, sr = sf.read(str(src))
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    if sr != target_rate:
+        data = resample_poly(data, target_rate, sr)
+    ipcm = np.clip(data * 32767.0, -32768, 32767).astype(np.int16)
+    sf.write(str(cache), ipcm, target_rate, subtype="PCM_16")
+    return cache
 
 
 # ---------- dataset discovery ---------------------------------------------
@@ -245,7 +259,9 @@ def run_klear_test(cfg: RunConfig, near: Path, far: Path,
 def score_farend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
                  tmpdir: Path) -> list[FarendResult]:
     out: list[FarendResult] = []
-    for i, (fid, mic, lpb) in enumerate(pairs):
+    for i, (fid, mic0, lpb0) in enumerate(pairs):
+        mic = resampled_path(mic0, cfg.rate) if cfg.rate != 48000 else mic0
+        lpb = resampled_path(lpb0, cfg.rate) if cfg.rate != 48000 else lpb0
         out_wav = tmpdir / f"{cfg.name}_fe_{i}.wav"
         stats_json = tmpdir / f"{cfg.name}_fe_{i}.json"
         stats = run_klear_test(cfg, mic, lpb, out_wav, stats_json)
@@ -294,7 +310,8 @@ def _silent_lpb_for(mic: Path, tmpdir: Path) -> Path:
 def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
                   tmpdir: Path) -> list[NearendResult]:
     out: list[NearendResult] = []
-    for i, (fid, mic, _unused_lpb) in enumerate(pairs):
+    for i, (fid, mic0, _unused_lpb) in enumerate(pairs):
+        mic = resampled_path(mic0, cfg.rate) if cfg.rate != 48000 else mic0
         lpb = _silent_lpb_for(mic, tmpdir)
         out_wav = tmpdir / f"{cfg.name}_ne_{i}.wav"
         stats_json = tmpdir / f"{cfg.name}_ne_{i}.json"
@@ -306,10 +323,9 @@ def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
         # Shift estimate forward by the pipeline's algorithmic delay so the
         # sample-aligned metrics (STOI, SI-SDR) measure quality rather than
         # alignment error. PESQ realigns internally so the shift is a no-op
-        # for it.
-        algo_ms = int(stats.get("algorithmic_delay_ms", 0))
-        max_shift_samples = max(1, int((algo_ms + 10) * sr / 1000))
-        mic_a, out_a, _ = align_by_xcorr(mic_data, out_data, max_shift_samples)
+        # for it. We give ourselves 200 ms of search window which more than
+        # covers AEC3 + DF3 + resampler filter delay at any rate.
+        mic_a, out_a, _ = align_by_xcorr(mic_data, out_data, sr, 200)
         mic_f = mic_a.astype(np.float64) / 32768.0
         out_f = out_a.astype(np.float64) / 32768.0
         # PESQ requires 8k or 16k; resample if needed.
@@ -344,15 +360,18 @@ def score_nearend(cfg: RunConfig, pairs: list[tuple[str, Path, Path]],
 DEFAULT_CONFIGS = [
     RunConfig("passthrough", aec=False, ns=False, hpf=False),
     RunConfig("aec_only",    aec=True,  ns=False, hpf=True),
-    RunConfig("aec_df_a100", aec=True,  ns=True,  hpf=True,
-              backend_ns="deepfilter", df_atten_db=100, df_post_filter_beta=0.02),
-    RunConfig("aec_df_a50",  aec=True,  ns=True,  hpf=True,
-              backend_ns="deepfilter", df_atten_db=50,  df_post_filter_beta=0.02),
-    RunConfig("aec_df_a30",  aec=True,  ns=True,  hpf=True,
-              backend_ns="deepfilter", df_atten_db=30,  df_post_filter_beta=0.02),
-    RunConfig("aec_df_a30_nopf", aec=True, ns=True, hpf=True,
+    RunConfig("aec_plus_df", aec=True,  ns=True,  hpf=True,
               backend_ns="deepfilter", df_atten_db=30,  df_post_filter_beta=0.0),
 ]
+
+
+def rate_sweep_configs(rates: list[int]) -> list[RunConfig]:
+    out: list[RunConfig] = []
+    for r in rates:
+        out.append(RunConfig(f"aec_df_{r}", aec=True, ns=True, hpf=True,
+                             backend_ns="deepfilter", df_atten_db=30,
+                             df_post_filter_beta=0.0, rate=r))
+    return out
 
 
 def run(name: str, configs: list[RunConfig], max_per_scenario: int) -> Path:
@@ -422,8 +441,15 @@ def main(argv: Iterable[str]) -> int:
                     help="name for this run (used as report filename)")
     ap.add_argument("--max", type=int, default=6,
                     help="max pairs per scenario (limits wall time)")
+    ap.add_argument("--rates", default="",
+                    help="if set, comma-separated list of rates for a "
+                         "rate-sweep benchmark instead of the default configs")
     args = ap.parse_args(list(argv))
-    run(args.run, DEFAULT_CONFIGS, args.max)
+    configs = DEFAULT_CONFIGS
+    if args.rates:
+        rates = [int(x) for x in args.rates.split(",")]
+        configs = rate_sweep_configs(rates)
+    run(args.run, configs, args.max)
     return 0
 
 

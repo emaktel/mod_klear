@@ -20,23 +20,34 @@ real phone audio.
 
 Measured on the Microsoft AEC Challenge ICASSP 2022 test set using the
 offline harness that shares its pipeline with the live module
-(`test/runner/bench.py`, config `aec_df_a30_nopf`, atten_lim=30 dB,
-post-filter off):
+(`test/runner/bench.py`, default config: DeepFilterNet3 atten_lim 30 dB,
+post-filter off, AEC3 + high-pass on). The module works at every common
+phone rate — narrowband (8 k), wideband (16 k), super-wideband (32 k), and
+full-band (48 k) — via a transparent libsoxr resampling stage inside the
+DF backend.
 
-| metric                                        | value      |
-|------------------------------------------------|-----------:|
-| Far-end single-talk ERLE (echo cancellation)   | **38.8 dB** |
-| Near-end single-talk PESQ-wb (preservation)    |  **4.14**  |
-| Near-end single-talk STOI                      |  **0.98**  |
-| Real-time factor (RTF, single core)            |  **~0.27** |
-| Total algorithmic delay (AEC + NS)             |  **30 ms** |
+| rate   | ERLE dB  | PESQ       | STOI  | RTF   | delay |
+|--------|---------:|-----------:|------:|------:|------:|
+|  8 kHz | **38.0** | **4.28** nb | 0.977 | 0.245 | 40 ms |
+| 16 kHz | 36.5     | 4.07 wb    | 0.984 | 0.281 | 40 ms |
+| 32 kHz | 39.2     | 4.05 wb    | 0.983 | 0.267 | 40 ms |
+| 48 kHz | 38.8     | 4.18 wb    | 0.986 | 0.239 | 30 ms |
 
-For reference, pass-through PESQ on the same files is 4.64, AEC alone is
-4.55, and AEC-only (no NS) delivers 16.8 dB ERLE. Full tables are in
-`test/reports/`. The 30 ms pipeline delay is deliberately at the
-conversational-voice comfort budget (ITU G.114 flags >150 ms one-way as
-the start of perceptible latency), and leaves the jitter-buffer and
-network paths untouched.
+ERLE is the whole-file power ratio on far-end single-talk clips (higher
+is more echo removed). PESQ / STOI are computed against a silent-
+reference near-end single-talk variant so they measure whether the
+pipeline leaves clean speech alone when there is no echo or noise to
+cancel. Per-channel wall-clock RTF is the fraction of real time spent in
+the pipeline on a single CPU core.
+
+For context: pass-through PESQ is 4.64, AEC-only (no NS) delivers 16.8 dB
+ERLE. The full benchmark sweep is reproducible with `make test && cd
+test/runner && python3 bench.py --rates 8000,16000,32000,48000`.
+
+The pipeline delay is 30 ms at 48 kHz native (AEC3 10 ms + DFN3 20 ms) and
+~40 ms at any other rate (+ SOXR_QQ 10 ms). Both fit inside the 50 ms
+conversational-voice comfort budget, and ITU G.114 flags > 150 ms one-way
+as the start of perceptible latency.
 
 ## Pipeline
 
@@ -198,18 +209,15 @@ the module from wav files:
 
 ## Limitations (v1)
 
-- **NS currently requires a 48 kHz channel rate.** DeepFilterNet runs at
-  48 kHz and mod_klear does not yet resample. If a channel runs at a
-  different rate (8/16/32 kHz is the overwhelming PSTN case) the module
-  will start with AEC3 only and log a warning. Adding libsoxr-based
-  resampling is the top v1.1 item.
-- AEC3 does run at any supported sample rate — APM handles resampling
-  internally — so narrowband phone calls still benefit from echo
-  cancellation, just without the neural NS stage.
 - The `klear-erle-db` statistic is unreliable (see above).
 - One channel at a time can have the bug attached (re-attaching is
   prevented, the way mod_stress does it).
 - The pipeline is strictly mono. Stereo phone audio is out of scope.
+- DeepFilterNet's default model ships inside libdeepfilter 0.5.7 but
+  `df_create(NULL, ...)` segfaults on a null path rather than loading it,
+  so the build installs `DeepFilterNet3_onnx.tar.gz` to
+  `/usr/local/share/deepfilternet/models/` and the backend defaults to
+  that path. If you want a custom model set `klear_ns_model` (future).
 
 ## License
 

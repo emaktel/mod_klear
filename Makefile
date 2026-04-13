@@ -29,17 +29,23 @@ APM_LIBS   := $(shell pkg-config --libs   webrtc-audio-processing-2)
 DF_CFLAGS := $(shell pkg-config --cflags deepfilter)
 DF_LIBS   := $(shell pkg-config --libs   deepfilter)
 
+SOXR_CFLAGS := $(shell pkg-config --cflags soxr 2>/dev/null)
+SOXR_LIBS   := $(shell pkg-config --libs   soxr 2>/dev/null)
+ifeq ($(SOXR_LIBS),)
+  SOXR_LIBS := -lsoxr
+endif
+
 SNDFILE_CFLAGS := $(shell pkg-config --cflags sndfile)
 SNDFILE_LIBS   := $(shell pkg-config --libs   sndfile)
 
 INCLUDES := -Isrc
 
 COMMON_CXXFLAGS := $(CXXSTD) $(OPT) $(WARN) -fPIC $(INCLUDES) \
-                   $(APM_CFLAGS) $(DF_CFLAGS)
+                   $(APM_CFLAGS) $(DF_CFLAGS) $(SOXR_CFLAGS)
 MOD_CXXFLAGS := $(COMMON_CXXFLAGS) $(FS_CFLAGS)
 MOD_LDFLAGS  := -shared -Wl,-soname,mod_klear.so \
                 -Wl,-rpath,/usr/local/lib/x86_64-linux-gnu \
-                $(FS_LIBS) $(APM_LIBS) $(DF_LIBS)
+                $(FS_LIBS) $(APM_LIBS) $(DF_LIBS) $(SOXR_LIBS)
 
 # ---- source lists -------------------------------------------------------
 CORE_SRC := src/processor.cpp src/reframer.cpp \
@@ -64,7 +70,7 @@ test: build build/klear_test
 
 build/klear_test: $(TEST_SRC)
 	$(CXX) $(COMMON_CXXFLAGS) $(SNDFILE_CFLAGS) -o $@ $(TEST_SRC) \
-	    $(APM_LIBS) $(DF_LIBS) $(SNDFILE_LIBS) \
+	    $(APM_LIBS) $(DF_LIBS) $(SOXR_LIBS) $(SNDFILE_LIBS) \
 	    -Wl,-rpath,/usr/local/lib/x86_64-linux-gnu
 
 install: install-module install-config install-models

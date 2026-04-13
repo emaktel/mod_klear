@@ -224,23 +224,12 @@ switch_status_t klear_start(switch_core_session_t* session) {
     auto aec_backend = std::make_unique<klear::WebrtcAec>(aec_opts);
 
     std::unique_ptr<klear::INsBackend> ns_backend;
-    if (want_ns && rate == 48000) {
+    if (want_ns) {
         klear::DeepFilterNs::Options df_opts;
         df_opts.atten_lim_db = atten_db;
         df_opts.post_filter_beta = 0.0f;
         ns_backend = std::make_unique<klear::DeepFilterNs>(df_opts);
     } else {
-        // DF currently requires 48 kHz. Honour the user's intent to disable
-        // NS by swapping in the null backend; log once so the operator knows
-        // why. Resampling support is tracked as a follow-up.
-        if (want_ns && rate != 48000) {
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-                SWITCH_LOG_WARNING,
-                "klear: NS requested but channel rate is %d Hz; DF requires "
-                "48000 Hz, running AEC-only on this channel\n", rate);
-            ks->ns_disabled_rate = true;
-            pcfg.ns_enabled = false;
-        }
         ns_backend = std::make_unique<klear::NullNs>();
     }
 

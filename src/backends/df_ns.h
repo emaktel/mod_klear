@@ -9,9 +9,12 @@ namespace klear {
 
 // DeepFilterNet (DFN3) neural noise suppression via libdeepfilter.
 //
-// v1 constraint: only sample_rate = 48000 is supported directly. For narrow-
-// and wide-band phone channels we will add a libsoxr resampling stage in a
-// follow-up; benchmarks run at 48k on the MS AEC Challenge corpus for now.
+// DeepFilterNet's native rate is 48 kHz. For channels running at other
+// rates (8k narrowband, 16k wideband, 32k superwideband) this backend
+// transparently resamples with libsoxr: int16 channel-rate in → float
+// upsample to 48k → DF → downsample to channel rate → int16 out. Input
+// frames must still be an integer number of block_size samples
+// (sample_rate / 100).
 class DeepFilterNs : public INsBackend {
 public:
     struct Options {
@@ -38,12 +41,17 @@ public:
     bool init(int sample_rate, std::string* error) override;
     void process(int16_t* in_out, std::size_t num_samples) override;
 
+    // DFN3 algorithmic delay plus any libsoxr filter delay imposed by the
+    // input resampling stage. At 48 kHz native the value is ~20 ms. At
+    // 8/16/32 kHz the SOXR_QQ resampler adds roughly 10 ms end-to-end, so
+    // the total pipeline delay (AEC + NS + resampler) stays at or below
+    // 40 ms for all supported rates.
     int algorithmic_delay_ms() const override;
     void get_stats(NsStats* out) const override;
     const char* name() const override { return "deepfilternet"; }
 
-private:
     struct Impl;
+private:
     std::unique_ptr<Impl> impl_;
     Options opts_;
     int sample_rate_ = 0;
