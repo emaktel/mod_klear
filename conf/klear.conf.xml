@@ -1,0 +1,18 @@
+<configuration name="klear.conf" description="mod_klear: AEC3 + DeepFilterNet">
+  <settings>
+    <!-- Defaults used when a channel does not set the corresponding
+         klear_* variable. Each channel can still override by setting the
+         variable before calling the klear app or by using the runtime
+         `set` verb. -->
+    <param name="default-aec" value="true"/>
+    <param name="default-ns"  value="true"/>
+    <param name="default-hpf" value="true"/>
+
+    <!-- DeepFilterNet attenuation limit in dB. 30 dB with the post filter
+         disabled is the empirically-tuned setting from test/reports: it
+         preserves near-end speech (PESQ 4.14) while keeping far-end
+         cancellation strong (38.8 dB ERLE combined with AEC3). Raise for
+         more aggressive denoising, lower for maximum speech preservation. -->
+    <param name="default-ns-atten-db" value="30.0"/>
+  </settings>
+</configuration>

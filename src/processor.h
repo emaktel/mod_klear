@@ -41,10 +41,20 @@ public:
               std::unique_ptr<INsBackend> ns,
               std::string* error);
 
-    // read:  samples incoming from remote (near-end / mic). Modified in place.
-    // write: samples we are about to send to remote (far-end reference). Unmodified.
-    // num_samples must be a multiple of block_size(); mismatched input is a
-    // no-op (logged once). Typical inputs are 10/20/30/40 ms frames.
+    // Feed the far-end reference (what FreeSWITCH is about to send towards
+    // the remote leg) to the echo canceller. This must be called once per
+    // render frame so AEC can learn the echo path. num_samples must be a
+    // multiple of block_size(). Non-modifying.
+    void process_render(const int16_t* write, std::size_t num_samples);
+
+    // Clean a near-end capture frame in place (what FreeSWITCH just
+    // received from the remote leg). Runs AEC, then NS, both respecting
+    // the hot-toggle flags. num_samples must be a multiple of block_size().
+    void process_capture(int16_t* read, std::size_t num_samples);
+
+    // Convenience wrapper: calls process_render then process_capture. Used
+    // by the offline harness where both streams are available at once. The
+    // FreeSWITCH media bug path uses the split calls above.
     void process(int16_t* read, const int16_t* write, std::size_t num_samples);
 
     // Thread-safe hot toggles.
@@ -60,6 +70,8 @@ public:
     void get_stats(ProcessorStats* out) const;
 
 private:
+    bool ensure_alignment(std::size_t num_samples);
+
     ProcessorConfig cfg_{};
     std::size_t block_size_ = 0;
     std::unique_ptr<IAecBackend> aec_;

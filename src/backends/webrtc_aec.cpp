@@ -10,7 +10,6 @@ namespace klear {
 struct WebrtcAec::Impl {
     rtc::scoped_refptr<webrtc::AudioProcessing> apm;
     webrtc::StreamConfig stream_cfg{0, 1};
-    webrtc::AudioProcessingStats last_stats;
 };
 
 WebrtcAec::WebrtcAec() : impl_(std::make_unique<Impl>()) {}
@@ -64,11 +63,10 @@ void WebrtcAec::get_stats(AecStats* out) const {
         *out = AecStats{};
         return;
     }
-    impl_->last_stats = impl_->apm->GetStatistics();
-    out->erle_db = impl_->last_stats.echo_return_loss_enhancement.value_or(0.0);
-    out->echo_likelihood =
-        impl_->last_stats.residual_echo_likelihood.value_or(0.0);
-    out->delay_estimate_ms = impl_->last_stats.delay_ms.value_or(0);
+    const auto stats = impl_->apm->GetStatistics();
+    out->erle_db = stats.echo_return_loss_enhancement.value_or(0.0);
+    out->echo_likelihood = stats.residual_echo_likelihood.value_or(0.0);
+    out->delay_estimate_ms = stats.delay_ms.value_or(0);
 }
 
 }  // namespace klear
