@@ -5,11 +5,21 @@
 #include "api/audio/audio_processing_statistics.h"
 #include "api/scoped_refptr.h"
 
+#include <vector>
+
 namespace klear {
 
 struct WebrtcAec::Impl {
     rtc::scoped_refptr<webrtc::AudioProcessing> apm;
     webrtc::StreamConfig stream_cfg{0, 1};
+    // Scratch buffer for ProcessReverseStream's dest argument. We never
+    // actually use APM's modified reverse output (we only feed the reverse
+    // stream so AEC can learn the echo path), so we give it somewhere safe
+    // to write that isn't the caller's frame buffer. Without this APM
+    // mutates the outgoing audio going to the far side and the caller
+    // hears silence — this was the root cause of a one-way-audio bug when
+    // mod_klear was used with delay_echo in a live FusionPBX dialplan.
+    std::vector<int16_t> render_scratch;
 };
 
 WebrtcAec::WebrtcAec() : impl_(std::make_unique<Impl>()) {}
@@ -47,10 +57,13 @@ bool WebrtcAec::init(int sample_rate, std::string* error) {
     return true;
 }
 
-void WebrtcAec::process_render(const int16_t* render, std::size_t /*num_samples*/) {
+void WebrtcAec::process_render(const int16_t* render, std::size_t num_samples) {
+    if (impl_->render_scratch.size() < num_samples) {
+        impl_->render_scratch.assign(num_samples, 0);
+    }
     impl_->apm->ProcessReverseStream(render, impl_->stream_cfg,
                                      impl_->stream_cfg,
-                                     const_cast<int16_t*>(render));
+                                     impl_->render_scratch.data());
 }
 
 void WebrtcAec::process_capture(int16_t* in_out, std::size_t /*num_samples*/) {
