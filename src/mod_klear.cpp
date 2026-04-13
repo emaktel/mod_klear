@@ -282,9 +282,38 @@ switch_status_t klear_start(switch_core_session_t* session) {
         return SWITCH_STATUS_FALSE;
     }
 
+    // Media bug flags.
+    //
+    // We used to include SMBF_WRITE_REPLACE so AEC3 could receive the
+    // far-end reference (the audio FreeSWITCH is about to send to the
+    // remote leg). In practice this was breaking the audio path on real
+    // SIP legs — with WRITE_REPLACE attached, `delay_echo`'s output never
+    // reached the caller, producing a one-way-audio bug in the live
+    // FusionPBX dialplan demo. FS's SMBF_WRITE_REPLACE dispatch flips its
+    // internal `do_bugs` flag to 0 and makes the media-bug callback the
+    // authoritative source for the outgoing frame, and we were unable to
+    // thread klear safely through that without corrupting playback.
+    //
+    // For the demo scenarios (delay_echo loopback, ASR feeds, bridges
+    // without acoustic loopback) there is no acoustic echo in the first
+    // place — nothing for AEC's reference path to learn against — so
+    // dropping the write bug is both safe and, empirically, the only
+    // thing that lets telephony/aec_only presets play audio back. AEC3
+    // without a render reference still runs on the capture path and is a
+    // near-passthrough instead of an actively-canceling filter, which
+    // matches the no-echo reality.
+    //
+    // A future v1.1 may re-introduce the render hookup via SMBF_WRITE_STREAM
+    // (non-modifying tee) and `switch_core_media_bug_read`. Tracked as
+    // feature work; not a regression from v1.
+    const bool want_render = false;
+    switch_media_bug_flag_t flags = static_cast<switch_media_bug_flag_t>(
+        SMBF_READ_REPLACE | SMBF_NO_PAUSE);
+    if (want_render) {
+        flags = static_cast<switch_media_bug_flag_t>(
+            flags | SMBF_WRITE_REPLACE);
+    }
     switch_media_bug_t* bug = nullptr;
-    const switch_media_bug_flag_t flags = static_cast<switch_media_bug_flag_t>(
-        SMBF_READ_REPLACE | SMBF_WRITE_REPLACE | SMBF_NO_PAUSE);
     switch_status_t st =
         switch_core_media_bug_add(session, kBugName, nullptr, klear_callback,
                                   ks, 0, flags, &bug);
