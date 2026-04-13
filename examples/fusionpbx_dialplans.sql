@@ -18,7 +18,7 @@ VALUES
 $xml$<extension name="klear-control" number="*9200" context="global" continue="false" global="true" order="355">
 	<condition field="destination_number" expression="^\*9200$">
 		<action application="answer"/>
-		<action application="echo"/>
+		<action application="delay_echo" data="5000"/>
 	</condition>
 </extension>$xml$,
   NOW()
@@ -32,7 +32,7 @@ $xml$<extension name="klear-agent" number="*9201" context="global" continue="fal
 		<action application="answer"/>
 		<action application="set" data="klear_preset=agent"/>
 		<action application="klear" data="start"/>
-		<action application="echo"/>
+		<action application="delay_echo" data="5000"/>
 	</condition>
 </extension>$xml$,
   NOW()
@@ -46,7 +46,7 @@ $xml$<extension name="klear-telephony" number="*9202" context="global" continue=
 		<action application="answer"/>
 		<action application="set" data="klear_preset=telephony"/>
 		<action application="klear" data="start"/>
-		<action application="echo"/>
+		<action application="delay_echo" data="5000"/>
 	</condition>
 </extension>$xml$,
   NOW()
@@ -60,7 +60,7 @@ $xml$<extension name="klear-aec-only" number="*9203" context="global" continue="
 		<action application="answer"/>
 		<action application="set" data="klear_preset=aec_only"/>
 		<action application="klear" data="start"/>
-		<action application="echo"/>
+		<action application="delay_echo" data="5000"/>
 	</condition>
 </extension>$xml$,
   NOW()

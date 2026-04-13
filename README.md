@@ -189,11 +189,16 @@ codes in the `global` context (so every domain inherits them):
 
 | code   | name              | what it does |
 |--------|-------------------|---|
-| `*9200` | klear-control     | baseline — plain `echo`, no klear, so you can hear the raw input |
-| `*9201` | klear-agent       | `klear_preset=agent` (DF-only) + echo |
-| `*9202` | klear-telephony   | `klear_preset=telephony` (AEC3 + DF aggressive) + echo |
-| `*9203` | klear-aec-only    | `klear_preset=aec_only` + echo |
-| `*9204` | klear-hot-toggle  | runs `examples/klear_hot_toggle.lua`, which flips `ns`/`aec` every 5 s so you can hear the pipeline change mid-call |
+| `*9200` | klear-control     | baseline — `delay_echo 5000`, no klear. Raw input with 5 s delay. |
+| `*9201` | klear-agent       | `klear_preset=agent` (DF-only) + `delay_echo 5000` |
+| `*9202` | klear-telephony   | `klear_preset=telephony` (AEC3 + DF) + `delay_echo 5000` |
+| `*9203` | klear-aec-only    | `klear_preset=aec_only` + `delay_echo 5000` |
+| `*9204` | klear-hot-toggle  | `examples/klear_hot_toggle.lua`: `delay_echo 5000` with `sched_api` flips `ns`/`aec` every 5 s so you can hear the pipeline change mid-call |
+
+The five-second delayed echo pattern is deliberate: speak a complete
+sentence, pause, then listen to your own voice come back cleaned — it's
+much easier to hear the difference between presets this way than with a
+zero-delay echo.
 
 Install:
 
